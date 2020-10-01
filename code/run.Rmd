@@ -1,0 +1,396 @@
+---
+title: 'Kickstarter: Exploratory Data Analysis'
+author: 'Sai Krishna Lanka'
+date: '7/16/2020'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE)
+```
+
+```{r load libraries and set options}
+if(!require('pacman')) install.packages('pacman')
+pacman::p_load(
+  tidyverse,
+  knitr,
+  plotly,
+  Hmisc,
+  RColorBrewer,
+  reshape2,
+  xts,
+  caret,
+  pROC)
+```
+
+```{r load data}
+ks.df <- read_csv('../data/Data.csv')
+
+ks.df$deadline <- as.Date(ks.df$deadline, format = '%m/%d/%Y')
+ks.df$launched <- as.Date(ks.df$launched, format = '%m/%d/%Y')
+```
+
+```{r}
+table(ks.df$state)
+```
+
+```{r}
+ks.df %>%
+  group_by(main_category) %>%
+  count() %>%
+  plot_ly(type = 'pie', labels = ~main_category, values = ~n, 
+          textposition = 'inside', textinfo = 'label+percent') %>%
+  layout(title = 'Campaigns across Various Main Categories',
+         showlegend = FALSE)
+```
+
+### Which main categories are more successful in reaching the goal?
+
+```{r}
+a1.df <- ks.df %>%
+  filter(state %in% c('successful', 'failed')) %>%
+  select(main_category, state)
+a1.df$main_category <- as.factor(a1.df$main_category)
+a1.df$state <- as.factor(a1.df$state)
+
+a1.df %>% 
+  group_by(main_category, state) %>% 
+  summarise(count = n()) %>% 
+  spread(state, count)
+```
+
+```{r}
+a1.obj.df <- data.frame(mainCategory = character(), pHat = numeric(), 
+                        lower95 = numeric(), upper95 = numeric())
+
+for(main_cat in levels(a1.df$main_category)) {
+  status <- a1.df %>%
+    filter(main_category == main_cat) %>%
+    group_by(state) %>%
+    count()
+  proportion.test <- prop.test(as.integer(status[2,2]), as.integer(status[1,2] + status[2,2]))
+  a1.obj.df <- a1.obj.df %>%
+    add_row(mainCategory = main_cat,
+            pHat = proportion.test$estimate * 100,
+            lower95 = proportion.test$conf.int[1] * 100,
+            upper95 = proportion.test$conf.int[2] * 100)
+  rm(status, proportion.test)
+}
+
+Dotplot(factor(levels(a1.df$main_category)) 
+        ~ Cbind(a1.obj.df$pHat, a1.obj.df$lower95, a1.obj.df$upper95), cex = 1,
+        xlab = 'Estimated Successful Campaign Percentage (and 95% Confidence Intervals)',
+        ylab = 'Main Category')
+```
+
+```{r}
+pairwise.prop.test(table(a1.df$main_category, a1.df$state))$p.value %>%
+  melt() %>%
+  na.omit() %>%
+  filter(value >= 0.05) %>%
+  arrange(desc(value))
+```
+
+### Which main categories attract more backers?
+
+```{r}
+a2.df <- ks.df %>%
+  select(main_category, backers)
+a2.df$main_category <- as.factor(a2.df$main_category)
+```
+
+```{r}
+ggplotly(
+  a2.df %>%
+    ggplot(aes(x = main_category, y = log10(backers), fill = main_category)) +
+    geom_violin(trim = FALSE, alpha = 0.5) +
+    geom_boxplot(alpha = 0.2) +
+    scale_fill_manual(values = colorRampPalette(brewer.pal(n = 8, name = 'Dark2'))(15)) +
+    theme_minimal() +
+    ggtitle('Log10(# Backers) across Main Categories') +
+    xlab('') + ylab('Log10(# Backers)') +
+    theme(plot.title = element_text(hjust = 0.5), legend.position = 'none'),
+  tooltip = c('y', 'density')
+) %>%
+  layout(xaxis = list(tickangle = 'auto'))
+```
+
+```{r}
+a2.obj.df <- data.frame(mainCategory = character(), pHat = numeric(), 
+                        lower95 = numeric(), upper95 = numeric())
+
+for(main_cat in levels(a2.df$main_category)) {
+  tstat.test <- t.test(log(a2.df[a2.df$main_category == main_cat, ]$backers + 1), 
+                       mu = 0, alternative = 'two.sided')
+  a2.obj.df <- a2.obj.df %>%
+    add_row(mainCategory = main_cat,
+            pHat = exp(tstat.test$estimate) - 1,
+            lower95 = exp(tstat.test$conf.int[1]) - 1,
+            upper95 = exp(tstat.test$conf.int[2]) - 1)
+  rm(tstat.test)
+}
+
+Dotplot(factor(levels(a2.df$main_category)) 
+        ~ Cbind(a2.obj.df$pHat, a2.obj.df$lower95, a2.obj.df$upper95), cex = 1,
+        xlab = 'Estimated Backers (and 95% Confidence Intervals)',
+        ylab = 'Main Category')
+```
+
+```{r}
+pairwise.t.test(log(a2.df$backers + 1), a2.df$main_category, 
+                pool.SD = FALSE)$p.value %>%
+  melt() %>%
+  na.omit() %>%
+  filter(value >= 0.05) %>%
+  arrange(desc(value))
+```
+
+### Which main categories raise more money from successful campaigns?
+
+```{r}
+a3.df <- ks.df %>%
+  filter(state == 'successful') %>%
+  select(main_category, usd_pledged_real)
+a3.df$main_category <- as.factor(a3.df$main_category)
+```
+
+```{r}
+ggplotly(
+  a3.df %>%
+    ggplot(aes(x = log10(usd_pledged_real))) +
+    geom_density(aes(fill = main_category), alpha = 0.5) +
+    facet_wrap(~main_category, ncol = 5) +
+    scale_fill_manual(values = colorRampPalette(brewer.pal(n = 8, name = 'Dark2'))(15)) +
+    theme_minimal() +
+    ggtitle('Log10(Pledged Amounts) across Main Categories (Successful Campaigns)') +
+    xlab('') + ylab('') +
+    theme(plot.title = element_text(hjust = 0.5), legend.position = 'none'),
+  tooltip = c('x', 'density')
+)
+```
+
+```{r}
+a3.df %>%
+  plot_ly(type = 'box', y = ~log10(usd_pledged_real), color = ~main_category, 
+          colors = colorRampPalette(brewer.pal(n = 8, name = 'Dark2'))(15)) %>%
+  layout(title = 'Log10(Pledged Amounts) across Main Categories (Successful Campaigns)',
+         yaxis = list(title = 'Log10(Pledged Amounts)', hoverformat = '.2f'),
+         showlegend = FALSE)
+```
+
+```{r}
+a3.obj.df <- data.frame(mainCategory = character(), pHat = numeric(), 
+                        lower95 = numeric(), upper95 = numeric())
+
+for(main_cat in levels(a3.df$main_category)) {
+  tstat.test <- t.test(log(a3.df[a3.df$main_category == main_cat, ]$usd_pledged_real), 
+                       mu = 0, alternative = 'two.sided', var.equal = TRUE)
+  a3.obj.df <- a3.obj.df %>%
+    add_row(mainCategory = main_cat,
+            pHat = exp(tstat.test$estimate),
+            lower95 = exp(tstat.test$conf.int[1]),
+            upper95 = exp(tstat.test$conf.int[2]))
+  rm(tstat.test)
+}
+
+Dotplot(factor(levels(a3.df$main_category)) 
+        ~ Cbind(a3.obj.df$pHat, a3.obj.df$lower95, a3.obj.df$upper95), cex = 1,
+        xlab = 'Estimated Pledged Amounts (and 95% Confidence Intervals)',
+        ylab = 'Main Category')
+```
+
+```{r}
+pairwise.t.test(log(a3.df$usd_pledged_real), a3.df$main_category, pool.SD = FALSE)$p.value %>%
+  melt() %>%
+  na.omit() %>%
+  filter(value >= 0.05) %>%
+  arrange(desc(value))
+```
+
+### Are there any significant differences in the projects' success across countries?
+
+```{r}
+a4.df <- ks.df %>%
+  filter(!country %in% c('N,0"') & state %in% c('successful', 'failed')) %>%
+  select(country, state, launched)
+a4.df$country <- as.factor(a4.df$country)
+a4.df$state <- as.factor(a4.df$state)
+
+a4.df %>% 
+  mutate(launch_yearmon = as.yearmon(launched)) %>%
+  group_by(country, state) %>% 
+  summarise(count = n()) %>% 
+  spread(state, count)
+```
+
+```{r}
+a4.obj.df <- data.frame(country = character(), pHat = numeric(),
+                        lower95 = numeric(), upper95 = numeric(), count = integer())
+
+for(cntry in levels(a4.df$country)) {
+  status <- a4.df %>%
+    filter(country == cntry) %>%
+    group_by(state) %>%
+    count()
+  proportion.test <- prop.test(as.integer(status[2,2]), as.integer(status[1,2] + status[2,2]))
+  a4.obj.df <- a4.obj.df %>%
+    add_row(country = cntry,
+            pHat = proportion.test$estimate * 100,
+            lower95 = proportion.test$conf.int[1] * 100,
+            upper95 = proportion.test$conf.int[2] * 100,
+            count = ks.df %>%
+              filter(country == cntry) %>%
+              count() %>%
+              as.integer())
+  rm(status, proportion.test)
+}
+
+Dotplot(factor(paste0(a4.obj.df$country, ' (', a4.obj.df$count, ')')) 
+        ~ Cbind(a4.obj.df$pHat, a4.obj.df$lower95, a4.obj.df$upper95), cex = 1,
+        xlab = 'Estimated Successful Campaign Percentage (and 95% Confidence Intervals)',
+        ylab = 'Country (Count)')
+```
+
+### Does goal amount set by a fundraiser have any impact on the success of a project?
+
+```{r}
+a5.df <- ks.df %>%
+  filter(state %in% c('successful', 'failed')) %>%
+  select(state, usd_goal_real)
+a5.df$state <- as.factor(a5.df$state)
+
+a5.df <- a5.df %>%
+  mutate(usd_goal_bucket = cut(usd_goal_real, breaks = c(0, 10, 100, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9), 
+                               labels=c('0-10', '10-100', '100-1K', '1K-10K', '10K-0.1M', '0.1M-1M',
+                                        '1M-10M', '10M-0.1B', '0.1B-1B')))
+
+a5.df <- table(a5.df$state, a5.df$usd_goal_bucket) %>% 
+  melt(value.name = 'count', varnames= c('state', 'usd_goal_bucket')) 
+```
+
+```{r}
+a5.df %>%
+  plot_ly(type = 'bar', x = ~usd_goal_bucket, y = ~count, color = ~state,
+          colors = c('coral4', 'chartreuse4'), alpha = 0.8) %>%
+  layout(title = 'Status Counts by Campaign Goal Range',
+         xaxis = list(title = 'Campaign Goal Range (in $)'),
+         yaxis = list(title = 'Count', type = 'log'),
+         legend = list(orientation = 'h', xanchor = 'center', x = 0.5, y = -0.15))
+```
+
+```{r}
+a5.df %>% 
+  spread(state, count) %>% 
+  mutate(success_percent = (successful/(successful + failed)*100) %>% 
+           round(2)) %>%
+  select(usd_goal_bucket, success_percent)
+```
+
+### Is there any noticeable trend over time?
+
+```{r}
+a6.df <- ks.df %>%
+  filter(state %in% c('successful', 'failed')) %>%
+  select(state, launched, usd_pledged_real)
+a6.df$state <- as.factor(a6.df$state)
+
+a6.df <- a6.df %>%
+  mutate(launch_year = format(launched, '%Y'),
+         launch_mon = factor(format(launched, '%b'), 
+                             levels = c('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'))) %>% 
+  group_by(launch_year, launch_mon, state) %>% 
+  summarise(count = n()) %>%
+  spread(state, count) %>%
+  mutate(success_percent = (successful/(successful + failed)) * 100,
+         launch_yearmon = as.yearmon(paste0(launch_mon, ' ', launch_year), format = '%b %Y'))
+```
+
+```{r}
+a6.df %>%
+  ungroup() %>%
+  plot_ly(type = 'scatter', mode = 'lines') %>%
+  add_trace(x = ~as.Date(launch_yearmon), y = ~successful, name = 'successful', 
+            color = I('chartreuse4'), alpha = 0.8) %>%
+  add_trace(x = ~as.Date(launch_yearmon), y = ~failed, name = 'failed', 
+            color = I('coral4'), alpha = 0.8) %>%
+  layout(title = 'Status Counts on Monthly Basis (Aggregated by Launch Date)',
+         xaxis = list(title = 'Timeline'),
+         yaxis = list(title = 'Count', type = 'log'),
+         legend = list(orientation = 'h', xanchor = 'center', x = 0.5, y = -0.2),
+         hovermode = 'compare')
+```
+
+```{r}
+a6.df %>% 
+  ungroup() %>%
+  filter(launch_year > 2009) %>%
+  plot_ly(type = 'scatter', mode = 'lines', x = ~launch_year, y = ~success_percent, 
+          color = ~launch_mon, colors = 'BrBG') %>%
+  layout(title = 'Success Percentages on Monthly Basis (Aggregated by Launch Date)',
+         xaxis = list(title = 'Timeline'),
+         yaxis = list(title = 'Success Percentage'),
+         hovermode = 'compare')
+```
+
+```{r}
+a6.obj.df <- data.frame(month = character(), pHat = numeric(),
+                        lower95 = numeric(), upper95 = numeric())
+
+for(mon in levels(a6.df$launch_mon)) {
+  status <- a6.df %>%
+    filter(launch_mon == mon & launch_year > 2009)
+  tstat.test <- t.test(status$success_percent, mu = 0, alternative = 'two.sided', var.equal = TRUE)
+  
+  a6.obj.df <- a6.obj.df %>%
+    add_row(month = mon,
+            pHat = tstat.test$estimate,
+            lower95 = tstat.test$conf.int[1],
+            upper95 = tstat.test$conf.int[2])
+  rm(status, tstat.test)
+}
+
+Dotplot(factor(a6.obj.df$month, levels = c('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                                           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')) 
+        ~ Cbind(a6.obj.df$pHat, a6.obj.df$lower95, a6.obj.df$upper95), cex = 1,
+        xlab = 'Estimated Successful Campaign Percentage (and 95% Confidence Intervals)',
+        ylab = 'Month')
+```
+
+### Does duration of the project influence the project success?
+
+```{r}
+a7.df <- ks.df  %>% 
+  filter(state %in% c('successful', 'failed')) %>%
+  mutate(duration = deadline - launched) %>%
+  select(state, duration) %>%
+  group_by(duration, state) %>% 
+  summarise(count = n()) %>%
+  spread(state, count) %>%
+  mutate(success_percent = successful/(failed+successful)*100, duration = as.integer(duration)) %>%
+  ungroup()
+```
+
+```{r}
+a7.df %>%
+  plot_ly(type = 'bar', alpha = 0.8) %>%
+  add_trace(x = ~duration, y = ~successful, name = 'successful', color = I('chartreuse4')) %>%
+  add_trace(x = ~duration, y = ~failed, name = 'failed', color = I('coral4')) %>%
+  layout(title = 'Status Counts by Duration of the Project',
+         xaxis = list(title = 'Duration'),
+         yaxis = list(title = 'Count', type = 'log'),
+         legend = list(orientation = 'h', xanchor = 'center', x = 0.5, y = -0.2),
+         barmode = 'stack', hovermode = 'compare')
+```
+
+```{r}
+plot_ly() %>%
+  add_trace(data = a7.df, type = 'scatter', mode = 'markers+lines', 
+            x = ~duration, y = ~success_percent, alpha = 0.8, name = 'day') %>%
+  add_trace(data = a7.df %>% 
+              filter(duration %in% c(5*seq(1:20))), type = 'scatter', mode = 'markers', 
+            x = ~duration, y = ~success_percent, marker = list(color = 'red', size = 10), name = 'day') %>%
+  layout(title = 'Success Percentage vs Duration of the Project',
+         xaxis = list(title = 'Duration'),
+         yaxis = list(title = 'Success Percentage', hoverformat = '.2f'),
+         showlegend = FALSE)
+```

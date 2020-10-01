@@ -1,0 +1,499 @@
+---
+title: 'Kickstarter: Exploratory Data Analysis'
+author: 'Sai Krishna Lanka'
+date: '7/16/2020'
+output: 
+  html_document:
+    toc: TRUE
+    toc_float: TRUE
+    toc_depth: 3
+    theme: sandstone
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning = FALSE, message = FALSE,
+                      out.width = '100%', fig.height = 4, fig.align = 'center')
+```
+
+<style>body {text-align: justify}</style>
+<br/>
+
+## Introduction
+Kickstarter is an American public benefit corporation that maintains a global crowdfunding platform focused on creativity. . According to the company, as of July 2020, more than 17M people have pledged more than $4B to bring projects to life since 2009. How it works? - To raise funds, a ‘creator’ describes a project, sets a goal for the amount to raise, and appeals ‘backers’ to invest in the campaign. If the goal is reached, then creator receives all the funds pledged. Otherwise, the campaign will not be funded, and all the money is returned to the backers. Analysis on Kickstarter historic data would provide crucial insights for both creators and backers. This report tries to answer following questions:
+
++ Which main categories are more successful in reaching the goal?
++ Which main categories attract more backers?
++ Which main categories raise more money from successful campaigns?
++ Are there any significant differences in the projects' success across countries?
++ Does goal amount set by a fundraiser have any impact on the success of a project?
++ Is there any noticeable trend over time?
++ Does duration of the project influence the project success?
+
+Answers to the above questions can guide 1) creators to target a section of audience by developing projects in the popular sectors and choose ideal parameters to maximize their chance to succeed, and 2) backers to invest in such successful projects.
+
+```{r load libraries and set options}
+if(!require('pacman')) install.packages('pacman')
+pacman::p_load(
+  tidyverse,
+  knitr,
+  plotly,
+  Hmisc,
+  RColorBrewer,
+  reshape2,
+  xts)
+```
+
+<br/><br/>
+
+## Data
+The dataset contains information about 375k + projects with following major attributes:
+
++ `id` - Project ID number
++ `name` - Project name
+
+```{r load data}
+ks.df <- read_csv('../data/Data.csv')
+
+ks.df$deadline <- as.Date(ks.df$deadline, format = '%m/%d/%Y')
+ks.df$launched <- as.Date(ks.df$launched, format = '%m/%d/%Y')
+```
+
++ `main_category` - Project main category (decided by project creators)
+
+```{r}
+ks.df %>%
+  group_by(main_category) %>%
+  count() %>%
+  plot_ly(type = 'pie', labels = ~main_category, values = ~n, 
+          textposition = 'inside', textinfo = 'label+percent') %>%
+  layout(title = 'Campaigns across Various Main Categories',
+         showlegend = FALSE)
+```
+
++ `category` - Project subcategory within main category (decided by project creators)
++ `launched` - When project was launched on Kickstarter
++ `deadline` - Deadline by which fundraising goal should be met
++ `state` - Whether project was successful (reached fundraising goal), failed (did not reach fundraising goal), or cancelled (cancelled early by the project creator)
+
+```{r}
+table(ks.df$state) %>%
+  kable()
+```
+
++ `backers` - Number of people who have contributed to the project by paying an amount of money
++ `country` - Where the project is located
++ `usd_goal_real` - Project fundraising goal in USD
++ `usd_pledged_real` - Amount of money pledged by the deadline in USD
+<br/><br/>
+
+## Insights
+
+### Which main categories are more successful in reaching the goal?
+
+```{r}
+a1.df <- ks.df %>%
+  filter(state %in% c('successful', 'failed')) %>%
+  select(main_category, state)
+a1.df$main_category <- as.factor(a1.df$main_category)
+a1.df$state <- as.factor(a1.df$state)
+
+# a1.df %>% 
+#   group_by(main_category, state) %>% 
+#   summarise(count = n()) %>% 
+#   spread(state, count)
+```
+
+Around 50% Kickstarter campaigns belong to just 4 out of 15 main categories – namely Film & Video (16.7%), Music (13.2%), Publishing (10.5%) and Games (9.4%). The dot-plot shows estimated success percentages with 95% confidence level for projects belonging to the 15 main categories. The dot-plot is constructed by conducting two-sided proportion-tests with the null hypothesis: Probabilities of success across main categories are the same (only successful and failed campaigns are considered).
+
+```{r}
+a1.obj.df <- data.frame(mainCategory = character(), pHat = numeric(), 
+                        lower95 = numeric(), upper95 = numeric())
+
+for(main_cat in levels(a1.df$main_category)) {
+  status <- a1.df %>%
+    filter(main_category == main_cat) %>%
+    group_by(state) %>%
+    count()
+  proportion.test <- prop.test(as.integer(status[2,2]), as.integer(status[1,2] + status[2,2]))
+  a1.obj.df <- a1.obj.df %>%
+    add_row(mainCategory = main_cat,
+            pHat = proportion.test$estimate * 100,
+            lower95 = proportion.test$conf.int[1] * 100,
+            upper95 = proportion.test$conf.int[2] * 100)
+  rm(status, proportion.test)
+}
+
+Dotplot(as.factor(levels(a1.df$main_category)) ~ 
+          Cbind(a1.obj.df$pHat, a1.obj.df$lower95, a1.obj.df$upper95), cex = 1,
+        xlab = 'Estimated Successful Campaign Percentage (and 95% Confidence Intervals)',
+        ylab = 'Main Category')
+```
+
+Dance (65.4%), Theatre (63.8%), Comics (59.1%), and Music (52.5%) stand out with highest successful percentages. However, these campaigns only account for approximately 6% of total campaigns. On the other hand, 3 out of 4 campaigns belonging to Technology and Journalism fail.<br/>
+Conducting pairwise two-tailed proportion-tests have resulted in following set of main categories which have failed to reject the null hypothesis at 10% significance level:
+
+```{r}
+pairwise.prop.test(table(a1.df$main_category, a1.df$state))$p.value %>%
+  melt() %>%
+  na.omit() %>%
+  filter(value >= 0.05) %>%
+  arrange(desc(value)) %>%
+  kable()
+```
+
+<br/>
+
+### Which main categories attract more backers?
+
+```{r}
+a2.df <- ks.df %>%
+  select(main_category, backers)
+a2.df$main_category <- as.factor(a2.df$main_category)
+```
+
+Generally, there are a greater number of projects with a lower number of backers and a lower number of projects with a greater number of backers. Hence the distribution is skewed to the higher side. By plotting logarithmic distribution/box plots of backers across main categories, couple of crucial insights can be found out.
+
+```{r}
+ggplotly(
+  a2.df %>%
+    ggplot(aes(x = main_category, y = log10(backers), fill = main_category)) +
+    geom_violin(trim = FALSE, alpha = 0.5) +
+    geom_boxplot(alpha = 0.2) +
+    scale_fill_manual(values = colorRampPalette(brewer.pal(n = 8, name = 'Dark2'))(15)) +
+    theme_minimal() +
+    ggtitle('Log10(# Backers) across Main Categories') +
+    xlab('') + ylab('Log10(# Backers)') +
+    theme(plot.title = element_text(hjust = 0.5), legend.position = 'none'),
+  tooltip = c('y', 'density')
+) %>%
+  layout(xaxis = list(tickangle = 'auto'))
+```
+
+Comics, Design, and Games have longer normal distributions which show that these projects have greater median/mean backers but also are highly uncertain to estimate comparatively. Dance, Music, and Theatre have fatter distributions on somewhat higher end, suggesting that these main categories have a greater number of projects with a decent number of backers and can be considered as safe bet.<br/>
+The dot-plot shows estimated number of backers (back transformed) with 95% confidence level for projects belonging to the 15 main categories. The dot-plot articulates formal two-tailed t-tests with the null hypothesis: Estimated number of backers is same across main categories (all the project states are included).
+
+```{r}
+a2.obj.df <- data.frame(mainCategory = character(), pHat = numeric(), 
+                        lower95 = numeric(), upper95 = numeric())
+
+for(main_cat in levels(a2.df$main_category)) {
+  tstat.test <- t.test(log(a2.df[a2.df$main_category == main_cat, ]$backers + 1), 
+                       mu = 0, alternative = 'two.sided')
+  a2.obj.df <- a2.obj.df %>%
+    add_row(mainCategory = main_cat,
+            pHat = exp(tstat.test$estimate) - 1,
+            lower95 = exp(tstat.test$conf.int[1]) - 1,
+            upper95 = exp(tstat.test$conf.int[2]) - 1)
+  rm(tstat.test)
+}
+
+Dotplot(as.factor(levels(a2.df$main_category)) ~ 
+          Cbind(a2.obj.df$pHat, a2.obj.df$lower95, a2.obj.df$upper95), cex = 1,
+        xlab = 'Estimated Backers (and 95% Confidence Intervals)',
+        ylab = 'Main Category')
+```
+
+Coinciding with earlier reasoning, Comics (~33), Games (~31), and Design (~30) have greater number of estimated backers. Journalism and Crafts, on an average, attract very few backers.<br/>
+Conducting pairwise Satterthwaite two-tailed t-tests have resulted in following set of main categories which have failed to reject the null hypothesis at 10% significance level:
+
+```{r}
+pairwise.t.test(log(a2.df$backers + 1), a2.df$main_category, 
+                pool.SD = FALSE)$p.value %>%
+  melt() %>%
+  na.omit() %>%
+  filter(value >= 0.05) %>%
+  arrange(desc(value)) %>%
+  kable()
+```
+
+<br/>
+
+### Which main categories raise more money from successful campaigns?
+
+```{r}
+a3.df <- ks.df %>%
+  filter(state == 'successful') %>%
+  select(main_category, usd_pledged_real)
+a3.df$main_category <- as.factor(a3.df$main_category)
+```
+
+One of the main features of Kickstarter is that only when the pledges reach the funding goal value by deadline, campaigns are funded, or else money is returned. Hence it makes sense to only analyze pledged amounts of successful projects. The distribution and box plots of pledged amounts across main categories suggest that the logarithmic transformation on right skewed data has satisfied the normality assumption fairly. Technology, Design, and Games seem to have greater median pledged amount as seen in the box plot.
+
+##### {.tabset .tabset-fade}
+###### Distribution plot
+
+```{r fig.height = 5}
+ggplotly(
+  a3.df %>%
+    ggplot(aes(x = log10(usd_pledged_real))) +
+    geom_density(aes(fill = main_category), alpha = 0.5) +
+    facet_wrap(~main_category, ncol = 5) +
+    scale_fill_manual(values = colorRampPalette(brewer.pal(n = 8, name = 'Dark2'))(15)) +
+    theme_minimal() +
+    ggtitle('Log10(Pledged Amounts) across Main Categories (Successful Campaigns)') +
+    xlab('') + ylab('') +
+    theme(plot.title = element_text(hjust = 0.5), legend.position = 'none'),
+  tooltip = c('x', 'density')
+)
+```
+
+###### Box plot
+
+```{r}
+a3.df %>%
+  plot_ly(type = 'box', y = ~log10(usd_pledged_real), color = ~main_category, 
+          colors = colorRampPalette(brewer.pal(n = 8, name = 'Dark2'))(15)) %>%
+  layout(title = 'Log10(Pledged Amounts) across Main Categories (Successful Campaigns)',
+         yaxis = list(title = 'Log10(Pledged Amounts)', hoverformat = '.2f'),
+         showlegend = FALSE)
+```
+
+##### {-}
+The dot-plot displays estimated pledged amounts (back transformed) with 95% confidence level for projects belonging to the 15 main categories. The dot-plot includes two-tailed t-test with the null hypothesis: Estimated value of pledged amounts is same across main categories (only successful projects are included).
+
+```{r}
+a3.obj.df <- data.frame(mainCategory = character(), pHat = numeric(), 
+                        lower95 = numeric(), upper95 = numeric())
+
+for(main_cat in levels(a3.df$main_category)) {
+  tstat.test <- t.test(log(a3.df[a3.df$main_category == main_cat, ]$usd_pledged_real), 
+                       mu = 0, alternative = 'two.sided', var.equal = TRUE)
+  a3.obj.df <- a3.obj.df %>%
+    add_row(mainCategory = main_cat,
+            pHat = exp(tstat.test$estimate),
+            lower95 = exp(tstat.test$conf.int[1]),
+            upper95 = exp(tstat.test$conf.int[2]))
+  rm(tstat.test)
+}
+
+Dotplot(as.factor(levels(a3.df$main_category)) ~ 
+          Cbind(a3.obj.df$pHat, a3.obj.df$lower95, a3.obj.df$upper95), cex = 1,
+        xlab = 'Estimated Pledged Amounts (and 95% Confidence Intervals)',
+        ylab = 'Main Category')
+```
+
+It is surprising to see that some projects in Technology attract huge pledges (~$20K) from a fewer number of backers (~11) comparatively. Design (~$13.7K) and Games (~$10.6K) come second and third in the pecking order. On the other hand, Comics attract lower pledges (~$4.2K) from a greater number of backers (~33) on an average. Although Theatre, Dance, and Music have higher success rates with decent number of backers, they do not pull in huge bucks.<br/>
+Conducting pairwise Satterthwaite two-tailed t-tests have resulted in following set of main categories which have failed to reject the null hypothesis at 5% significance level:
+
+```{r}
+pairwise.t.test(log(a3.df$usd_pledged_real), a3.df$main_category, pool.SD = FALSE)$p.value %>%
+  melt() %>%
+  na.omit() %>%
+  filter(value >= 0.05) %>%
+  arrange(desc(value)) %>%
+  kable()
+```
+
+From the previous and present analyses, projects in Theater and Dance categories have similar estimated success rates, number of backers, and pledged amounts. This may be attributed to the intertwining nature of projects belonging to those categories.
+<br/>
+
+### Are there any significant differences in the projects' success across countries?
+
+```{r}
+a4.df <- ks.df %>%
+  filter(!country %in% c('N,0"') & state %in% c('successful', 'failed')) %>%
+  select(country, state, usd_pledged_real)
+a4.df$country <- as.factor(a4.df$country)
+a4.df$state <- as.factor(a4.df$state)
+
+# a4.df %>% 
+#   mutate(launch_yearmon = as.yearmon(launched)) %>%
+#   group_by(country, state) %>% 
+#   summarise(count = n()) %>% 
+#   spread(state, count)
+```
+
+By examining the dot-plot which shows estimated success percentages of projects across countries, one can discover couple of striking points. The uncertainty in estimating can be linked with countries having lower number of campaigns. This is evident in Japan (40) and Luxembourg (62) which have the lowest counts. Campaigns started in USA account for almost 78% of total and has success rate over 40%. Hong Kong (45%), Great Britain (41%), and Singapore (39%) have high success rates. The second point is that most of the success rates are significantly different and hence country effects should be considered in determining the success of projects. 
+
+```{r}
+a4.obj.df <- data.frame(country = character(), pHat = numeric(),
+                        lower95 = numeric(), upper95 = numeric(), count = integer())
+
+for(cntry in levels(a4.df$country)) {
+  status <- a4.df %>%
+    filter(country == cntry) %>%
+    group_by(state) %>%
+    count()
+  proportion.test <- prop.test(as.integer(status[2,2]), as.integer(status[1,2] + status[2,2]))
+  a4.obj.df <- a4.obj.df %>%
+    add_row(country = cntry,
+            pHat = proportion.test$estimate * 100,
+            lower95 = proportion.test$conf.int[1] * 100,
+            upper95 = proportion.test$conf.int[2] * 100,
+            count = ks.df %>%
+              filter(country == cntry) %>%
+              count() %>%
+              as.integer())
+  rm(status, proportion.test)
+}
+
+Dotplot(as.factor(paste0(a4.obj.df$country, ' (', a4.obj.df$count, ')')) ~
+          Cbind(a4.obj.df$pHat, a4.obj.df$lower95, a4.obj.df$upper95), cex = 1,
+        xlab = 'Estimated Successful Campaign Percentage (and 95% Confidence Intervals)',
+        ylab = 'Country (Count)')
+```
+
+<br/>
+
+### Does goal amount set by a fundraiser have any impact on the success of a project?
+
+```{r}
+a5.df <- ks.df %>%
+  filter(state %in% c('successful', 'failed')) %>%
+  select(state, usd_goal_real)
+a5.df$state <- as.factor(a5.df$state)
+
+a5.df <- a5.df %>%
+  mutate(usd_goal_bucket = cut(usd_goal_real, breaks = c(0, 10, 100, 1e3, 1e4, 1e5, 1e6, 1e7, 1e8, 1e9), 
+                               labels=c('0-10', '10-100', '100-1K', '1K-10K', '10K-0.1M', '0.1M-1M',
+                                        '1M-10M', '10M-0.1B', '0.1B-1B')))
+
+a5.df <- table(a5.df$state, a5.df$usd_goal_bucket) %>% 
+  melt(value.name = 'count', varnames= c('state', 'usd_goal_bucket')) 
+```
+
+```{r}
+a5.df %>%
+  plot_ly(type = 'bar', x = ~usd_goal_bucket, y = ~count, color = ~state,
+          colors = c('coral4', 'chartreuse4'), alpha = 0.8) %>%
+  layout(title = 'Status Counts by Campaign Goal Range',
+         xaxis = list(title = 'Campaign Goal Range (in $)'),
+         yaxis = list(title = 'Count', type = 'log'),
+         legend = list(orientation = 'h', xanchor = 'center', x = 0.5, y = -0.2))
+```
+
+Kickstarter ventures are generally funded by raising small amounts of money from a large number of people. Most campaigns have goal value below $1M. For a campaign creator, ideas that have realistic funding goal between $1K to $1M are generally suggestive. Only 11 out of 840 projects with funding goal over $1M have succeeded. Therefore, the realistic odds of success decrease as the goal value of project increases.
+<br/>
+
+### Is there any noticeable trend over time?
+
+```{r}
+a6.df <- ks.df %>%
+  filter(state %in% c('successful', 'failed')) %>%
+  select(state, launched, usd_pledged_real)
+a6.df$state <- as.factor(a6.df$state)
+
+a6.df <- a6.df %>%
+  mutate(launch_year = format(launched, '%Y'),
+         launch_mon = factor(format(launched, '%b'), 
+                             levels = c('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'))) %>% 
+  group_by(launch_year, launch_mon, state) %>% 
+  summarise(count = n()) %>%
+  spread(state, count) %>%
+  mutate(success_percent = (successful/(successful + failed)) * 100,
+         launch_yearmon = as.yearmon(paste0(launch_mon, ' ', launch_year), format = '%b %Y'))
+```
+
+```{r}
+a6.df %>%
+  ungroup() %>%
+  plot_ly(type = 'scatter', mode = 'lines') %>%
+  add_trace(x = ~as.Date(launch_yearmon), y = ~successful, name = 'successful', 
+            color = I('chartreuse4'), alpha = 0.8) %>%
+  add_trace(x = ~as.Date(launch_yearmon), y = ~failed, name = 'failed', 
+            color = I('coral4'), alpha = 0.8) %>%
+  layout(title = 'Status Counts on Monthly Basis (Aggregated by Launch Date)',
+         xaxis = list(title = 'Timeline'),
+         yaxis = list(title = 'Count', type = 'log'),
+         legend = list(orientation = 'h', xanchor = 'center', x = 0.5, y = -0.2),
+         hovermode = 'compare')
+```
+
+```{r}
+a6.df %>% 
+  ungroup() %>%
+  filter(launch_year > 2009) %>%
+  plot_ly(type = 'scatter', mode = 'lines', x = ~launch_year, y = ~success_percent, 
+          color = ~launch_mon, colors = 'BrBG') %>%
+  layout(title = 'Success Percentages on Monthly Basis (Aggregated by Launch Date)',
+         xaxis = list(title = 'Timeline'),
+         yaxis = list(title = 'Success Percentage'),
+         hovermode = 'compare')
+```
+
+The first time-series plot detailing monthly project counts reveals that historically Decembers have fewer campaign launches since 2011. A few intriguing trends stand out by analyzing the second time-series plot which displays the success percentages on monthly basis from 2010 to 2017. Decembers and Julys have lower success rates for most years. Furthermore, campaigns launched in the first half of years from 2010 to 2014 have higher success rates compared to the ones launched in the second half. However, this trend reversed from 2015 onwards with higher success rates in second half. But it is imperative to check if these monthly trends are significant.<br/>
+The dot-plot is constructed by conducting a formal two-sided t-test and displays estimated success rates with 95% confidence level for projects launched in various months from 2010 to 2017. The dot-plot shows a clear pattern of bi-annual periodicity with January-June cycle and July-December cycle. The estimated success rate is highest in the month of March with 46% for the first half and is highest in the month of October with 44% for the second half. However, these rates are not significantly different at 5% significance level.
+
+```{r}
+a6.obj.df <- data.frame(month = character(), pHat = numeric(),
+                        lower95 = numeric(), upper95 = numeric())
+
+for(mon in levels(a6.df$launch_mon)) {
+  status <- a6.df %>%
+    filter(launch_mon == mon & launch_year > 2009)
+  tstat.test <- t.test(status$success_percent, mu = 0, alternative = 'two.sided', var.equal = TRUE)
+  
+  a6.obj.df <- a6.obj.df %>%
+    add_row(month = mon,
+            pHat = tstat.test$estimate,
+            lower95 = tstat.test$conf.int[1],
+            upper95 = tstat.test$conf.int[2])
+  rm(status, tstat.test)
+}
+
+Dotplot(factor(a6.obj.df$month, levels = c('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 
+                                           'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec')) 
+        ~ Cbind(a6.obj.df$pHat, a6.obj.df$lower95, a6.obj.df$upper95), cex = 1,
+        xlab = 'Estimated Successful Campaign Percentage (and 95% Confidence Intervals)',
+        ylab = 'Month')
+```
+
+<br/>
+
+### Does duration of the project influence the project success?
+
+```{r}
+a7.df <- ks.df  %>% 
+  filter(state %in% c('successful', 'failed')) %>%
+  mutate(duration = deadline - launched) %>%
+  select(state, duration) %>%
+  group_by(duration, state) %>% 
+  summarise(count = n()) %>%
+  spread(state, count) %>%
+  mutate(success_percent = successful/(failed+successful)*100, duration = as.integer(duration)) %>%
+  ungroup()
+```
+
+Initially creators had an option to set funding duration for up to 3 months but later it was reduced to 60 days. This is also conveyed in the bar plot. Generally, creators tend to set project duration in multiples of 5 days.
+
+```{r}
+a7.df %>%
+  plot_ly(type = 'bar', alpha = 0.8) %>%
+  add_trace(x = ~duration, y = ~successful, name = 'successful', color = I('chartreuse4')) %>%
+  add_trace(x = ~duration, y = ~failed, name = 'failed', color = I('coral4')) %>%
+  layout(title = 'Status Counts by Duration of the Project',
+         xaxis = list(title = 'Duration'),
+         yaxis = list(title = 'Count', type = 'log'),
+         legend = list(orientation = 'h', xanchor = 'center', x = 0.5, y = -0.2),
+         barmode = 'stack', hovermode = 'compare')
+```
+
+The plot between success percentage and duration of project uncovers few crucial insights. Firstly, projects with lesser durations would not attract enough backers to support the cause and longer durations would generally backfire due to unknown reasons. Ideally, projects should have deadlines in the range of 2-4 weeks after they are created. Secondly, the success percentage does decrease for every multiple of 5 days which may be related to higher number of campaigns with such deadlines as explained by the former plot.
+
+```{r}
+plot_ly() %>%
+  add_trace(data = a7.df, type = 'scatter', mode = 'markers+lines', 
+            x = ~duration, y = ~success_percent, alpha = 0.8, name = 'day') %>%
+  add_trace(data = a7.df %>% 
+              filter(duration %in% c(5*seq(1:20))), type = 'scatter', mode = 'markers', 
+            x = ~duration, y = ~success_percent, marker = list(color = 'red', size = 10), name = 'day') %>%
+  layout(title = 'Success Percentage vs Duration of the Project',
+         xaxis = list(title = 'Duration'),
+         yaxis = list(title = 'Success Percentage', hoverformat = '.2f'),
+         showlegend = FALSE)
+```
+
+<br/><br/>
+
+## Conclusion
+Kickstarter historic data has a lot of valuable insights to offer. As of January 2018, around 375K+ campaigns were hosted on Kickstarter out of which 36% were successful since its inception in 2009. Successful campaigns have brought in over $3B from over 39M pledges. Pebble Time is the largest successful campaign which got funding over $20M from over 78K pledges.<br/>
+Generally, projects in entertainment categories like Music, Theater, Dance and Comics are most likely to succeed compared to Technology, Crafts and Journalism. Although, 3 out of 4 projects in Technology are bound to fail, these campaigns bring in huge bucks compared to projects in any other category. Music, Dance and Theater are safe bet categories which pull decent number of backers. Projects in Theatre and Dance have similar metrics due to their intertwined nature. Project success rates in most of the countries are significantly different and the American market shows dominance due to the platform’s roots.<br/>
+There are other crucial metrics, that a creator needs to take note of. Kickstarter being a crowdfunding platform, the realistic funding goal is between $1K to $1M. Since 2011, fewer campaigns are launched in the month of December. Starting a campaign during February-April cycle and September-November cycle has a slightly higher chance to succeed. However, this is not significantly different across all the months. Setting a suitable duration is also important for creators to request funds. It is generally suggestive to set deadlines in the range of 2-4 weeks after the project is created.<br/>
+Kickstarter has provided a platform for many artists, designers, makers, musicians, and creative people at every level. The exploratory data analysis presented in this report can guide creators develop projects that could maximize their chance to succeed. Feature engineering based on these factors can help choose strong predictors to determine the project’s success which is not covered in this report.
+<br/><br/>
+
+## References
+* [Kickstarter Wiki](https://en.wikipedia.org/wiki/Kickstarter){target="_blank"}
+* [How it works](https://www.kickstarter.com/how-it-works){target="_blank"}
+* [Kaggle Dataset](https://www.kaggle.com/kemical/kickstarter-projects?select=ks-projects-201801.csv){target="_blank"}
