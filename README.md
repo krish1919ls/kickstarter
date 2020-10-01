@@ -19,7 +19,7 @@ The dataset contains information about 375k + projects with following major attr
 * `state` – Whether project was successful (reached fundraising goal), failed (did not reach fundraising goal), or cancelled (cancelled early by the project creator)
 * `backers` – Number of people who have contributed to the project by paying an amount of money
 * `country` – Where the project is located
-* `usd_goal_real – Project fundraising goal in USD
+* `usd_goal_real` – Project fundraising goal in USD
 * `usd_pledged_real` – Amount of money pledged by the deadline in USD
 ## Analysis
 The complete analysis report is published on [RPubs](https://rpubs.com/phxlumens/kickstarter).<br/>
